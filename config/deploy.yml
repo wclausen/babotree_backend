@@ -10,9 +10,9 @@ servers:
     hosts:
       - 5.161.48.114
     labels:
-      traefik.http.routers.kiqr_cloud.rule: Host(`babotree.com`)
+      traefik.http.routers.kiqr_cloud.rule: Host(`api.babotree.com`)
       traefik.http.routers.kiqr_cloud_secure.entrypoints: websecure
-      traefik.http.routers.kiqr_cloud_secure.rule: Host(`babotree.com`)
+      traefik.http.routers.kiqr_cloud_secure.rule: Host(`api.babotree.com`)
       traefik.http.routers.kiqr_cloud_secure.tls: true
       traefik.http.routers.kiqr_cloud_secure.tls.certresolver: letsencrypt
 
@@ -29,7 +29,7 @@ traefik:
     entryPoints.web.http.redirections.entryPoint.scheme: https
     entryPoints.web.http.redirections.entrypoint.permanent: true
     entrypoints.websecure.http.tls: true
-    entrypoints.websecure.http.tls.domains[0].main: "babotree.com"
+    entrypoints.websecure.http.tls.domains[0].main: "api.babotree.com"
     certificatesResolvers.letsencrypt.acme.email: "webmaster@babotree.com"
     certificatesResolvers.letsencrypt.acme.storage: "/letsencrypt/acme.json"
     certificatesResolvers.letsencrypt.acme.httpchallenge: true
