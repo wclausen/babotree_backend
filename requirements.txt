@@ -1,0 +1,15 @@
+pgvector~=0.2.4
+sqlalchemy~=2.0.23
+alembic~=1.13.1
+openai~=1.3.7
+requests~=2.31.0
+fastapi~=0.104.1
+pydantic~=2.5.2
+starlette~=0.27.0
+psycopg2-binary~=2.9.5
+uvicorn~=0.20.0
+tenacity~=8.2.3
+html2text~=2020.1.16
+markdown~=3.5.1
+beautifulsoup4~=4.12.2
+tiktoken~=0.5.2

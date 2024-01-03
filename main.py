@@ -1,22 +1,28 @@
 import datetime
 import json
 import os
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from json import JSONDecodeError
-from typing import Union, Dict, List, Optional
+from typing import Union, Dict, List, Optional, Tuple
 
+import markdown
 import openai
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 from starlette.middleware.cors import CORSMiddleware
 
-from babotree_utils import get_secret
+from app.babotree_utils import get_secret
+from app.database import get_db
+from app.models import Highlight, HighlightSource, HighlightSourceOutline
 
 app = FastAPI()
 
 origins = [
+    "https://babotree.com",
     "http://localhost:5173",
 ]
 
@@ -35,24 +41,24 @@ def read_root():
     return {"Hello": "World"}
 
 
-class Highlight(BaseModel):
-    id: int
+class ApiHighlight(BaseModel):
+    id: uuid.UUID
     text: str
 
 
-class BookHighlights(BaseModel):
-    id: int
+class ApiSourceHighlights(BaseModel):
+    id: uuid.UUID
     book_title: str
     source_url: Optional[str]
     thumbnail_url: Optional[str]
-    highlights: List[Highlight]
+    highlights: List[ApiHighlight]
 
 
 class UserHighlights(BaseModel):
-    highlights_by_source: List[BookHighlights]
+    highlights_by_source: List[ApiSourceHighlights]
 
 
-def get_highlights_by_source(readwise_books, readwise_highlights):
+def get_highlights_by_source(relevant_highlights: List[Tuple[Highlight, HighlightSource]]):
     """
     Groups the highlight objects by book, and maps the json data to proper pydantic models
 
@@ -60,58 +66,64 @@ def get_highlights_by_source(readwise_books, readwise_highlights):
     :param readwise_highlights_response:
     :return:
     """
-    book_id_to_book = {}
-    for obj in readwise_books:
-        book = BookHighlights(
-            id=obj['id'],
-            book_title=obj['title'],
-            source_url=obj['source_url'],
-            thumbnail_url=obj['cover_image_url'],
-            highlights=[],  # we'll fill this in later
-        )
-        if obj['id'] not in book_id_to_book:
-            book_id_to_book[obj['id']] = book
-    for obj in readwise_highlights:
-        book_id = obj['book_id']
-        if book_id not in book_id_to_book:
+    source_id_to_source = {}
+    for _, source in relevant_highlights:
+        if source.id not in source_id_to_source:
+            source = ApiSourceHighlights(
+                id=source.id,
+                book_title=source.title,
+                source_url=source.source_url,
+                thumbnail_url=source.cover_image_url,
+                highlights=[],  # we'll fill this in later
+            )
+            source_id_to_source[source.id] = source
+    for highlight, _ in relevant_highlights:
+        source_id = highlight.source_id
+        if source_id not in source_id_to_source:
             continue
-        book = book_id_to_book[book_id]
-        book.highlights.append(Highlight(
-            id=obj['id'],
-            text=obj['text'],
+        source = source_id_to_source[source_id]
+        source.highlights.append(ApiHighlight(
+            id=highlight.id,
+            text=highlight.text,
         ))
-    for book in book_id_to_book.values():
-        book.highlights.reverse()
-    return list(book_id_to_book.values())
+    for source in source_id_to_source.values():
+        source.highlights.reverse()
+    return list(source_id_to_source.values())
 
+
+def _get_readwise_highlights(db: Session):
+    fifteen_days_ago = datetime.datetime.now() - datetime.timedelta(days=15)
+    relevant_highlights_and_sources = (db.query(Highlight, HighlightSource)
+                            .outerjoin(HighlightSource, HighlightSource.id == Highlight.source_id)
+                           .filter(Highlight.created_at > fifteen_days_ago)
+                            .order_by(Highlight.created_at.desc())
+                                       .all())
+    return UserHighlights(
+        highlights_by_source=get_highlights_by_source(relevant_highlights_and_sources)
+    )
 
 @app.get("/readwise")
-def get_readwise_highlights():
-    readwise_api_key = get_secret('READWISE_ACCESS_TOKEN')
-    headers = {
-        'Authorization': f'Token {readwise_api_key}',
-    }
-    yesterday = datetime.datetime.utcnow() - datetime.timedelta(days=15)
-    readwise_highlights_response = requests.get(
-        f'https://readwise.io/api/v2/highlights/?page_count=1000&updated__gt={yesterday}', headers=headers)
-    readwise_highlights = readwise_highlights_response.json()['results']
-    print(readwise_highlights[:2])
-    readwise_books_response = requests.get(f'https://readwise.io/api/v2/books/?page_count=1000&updated__gt={yesterday}', headers=headers)
-    readwise_books = readwise_books_response.json()['results']
-    print()
-    print(readwise_books[:2])
+def get_readwise_highlights(db: Session = Depends(get_db)):
+    start_time = time.time()
+    result = _get_readwise_highlights(db)
+    end_time = time.time()
+    print(f"Time to fetch readwise highlights: {end_time - start_time}")
+    return result
 
-    # print(readwise_books)
-    # print(readwise_articles_response.json()['results'][:2])
-    return UserHighlights(
-        highlights_by_source=get_highlights_by_source(readwise_books, readwise_highlights)
-    )
+@app.get("/similar_highlights")
+def get_similar_highlights(hids: List[str], db: Session = Depends(get_db)):
+    start_time = time.time()
+    # fetch the highlights from the db
+    highlights = db.query(Highlight).filter(Highlight.id.in_(hids)).all()
+    # fetch the embeddings from the db
+    embeddings = db.query(ContentEmbedding).filter(ContentEmbedding.source_id.in_(hids)).all()
+
 
 openai.api_key = get_secret('OPENAI_API_KEY')
 
 
 class GenerateQuestionsRequest(BaseModel):
-    highlight_ids: List[int]
+    highlight_ids: List[uuid.UUID]
 
 class QuestionAnswerPair(BaseModel):
     id: uuid.UUID
@@ -123,7 +135,7 @@ class GenerateQuestionsResponse(BaseModel):
     questions_and_answers: List[QuestionAnswerPair]
 
 
-def get_highlight_detail(highlight_id: str) -> Highlight:
+def get_highlight_detail(highlight_id: str) -> ApiHighlight:
     print(f"Requesting highlight detail for: {highlight_id}")
     readwise_api_key = get_secret('READWISE_ACCESS_TOKEN')
     headers = {
@@ -133,7 +145,7 @@ def get_highlight_detail(highlight_id: str) -> Highlight:
                             headers=headers)
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail="Failed to fetch highlight detail")
-    return Highlight(
+    return ApiHighlight(
         id=highlight_id,
         text=response.json()['text']
     )
@@ -141,20 +153,10 @@ def get_highlight_detail(highlight_id: str) -> Highlight:
 
 
 @app.post("/generate_questions")
-def generate_questions(generate_questions_request: GenerateQuestionsRequest):
+def generate_questions(generate_questions_request: GenerateQuestionsRequest, db: Session = Depends(get_db)):
     print(generate_questions_request.highlight_ids)
     # fetch highlight ids from readwise
-    results = []
-    with ThreadPoolExecutor(max_workers=min(4, len(generate_questions_request.highlight_ids))) as executor:
-        # readwise api requires requesting highlight details individually
-        futures = []
-        for highlight_id in generate_questions_request.highlight_ids:
-            futures.append(executor.submit(get_highlight_detail, highlight_id))
-        for future in futures:
-            try:
-                results.append(future.result())
-            except HTTPException as e:
-                raise e
+    results = db.query(Highlight).filter(Highlight.id.in_(generate_questions_request.highlight_ids)).all()
     # now we need to send the highlight data to openai to get questions related to these highlights
     openai_question_function_tools = [{
         "type": "function",
@@ -258,3 +260,18 @@ def get_openai_summary(source_id: int):
         presence_penalty=.45,
     )
     print(response.choices[0].message.content)
+
+def _get_source_outline(source_id: uuid.UUID, db: Session):
+    highlight_source_outline = db.query(HighlightSourceOutline).filter(HighlightSourceOutline.source_id == source_id).first()
+    return {
+        "outline_md": highlight_source_outline.outline_md,
+        "outline_html": markdown.markdown(highlight_source_outline.outline_md)
+    }
+
+@app.get("/source/outline/{source_id}")
+def get_source_outline(source_id: uuid.UUID, db: Session = Depends(get_db)):
+    start_time = time.time()
+    result = _get_source_outline(source_id, db)
+    end_time = time.time()
+    print(f"Time to fetch source outline: {end_time - start_time}")
+    return result
