@@ -17,7 +17,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from app.babotree_utils import get_secret
 from app.database import get_db
-from app.models import Highlight, HighlightSource, HighlightSourceOutline
+from app.models import Highlight, HighlightSource, HighlightSourceOutline, Flashcard
 
 app = FastAPI()
 
@@ -39,6 +39,24 @@ app.add_middleware(
 @app.get("/")
 def read_root():
     return {"Hello": "World"}
+
+class ApiFlashcard(BaseModel):
+    id: uuid.UUID
+    question: str
+    answer: str
+
+@app.get("/flashcards")
+def get_main_flashcards(db: Session = Depends(get_db)):
+    """
+    Returns the flashcards for the main page
+    """
+    flashcards = db.query(Flashcard).order_by(Flashcard.created_at.desc()).all()
+    return {
+        "flashcards": [ApiFlashcard(
+        id=flashcard.id,
+        question=flashcard.question,
+        answer=flashcard.answer) for flashcard in flashcards]}
+
 
 
 class ApiHighlight(BaseModel):

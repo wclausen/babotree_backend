@@ -54,6 +54,7 @@ class HighlightSource(Base):
     def __repr__(self):
         return f"HighlightSource(readwise_id={self.readwise_id}, title={self.title})"
 
+
 class HighlightSourceOutline(Base):
     __tablename__ = 'highlight_sources_outlines'
 
@@ -91,3 +92,26 @@ class JobResults(Base):
     extra_data = Column(JSON)
     created_at = Column(DateTime)
 
+class Flashcard(Base):
+    __tablename__ = 'flashcards'
+
+    id = Column(UUID, primary_key=True, index=True, default=uuid.uuid4)
+    topic = Column(String(length=2048))
+    question = Column(String(length=2048))
+    answer = Column(String(length=2048))
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+class FlashcardHighlightSource(Base):
+    __tablename__ = 'flashcard_highlight_sources'
+
+    id = Column(UUID, primary_key=True, index=True, default=uuid.uuid4)
+    flashcard_id = Column(UUID, ForeignKey('flashcards.id'), index=True)
+    highlight_id = Column(UUID, ForeignKey('highlights.id'), index=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+class KeyValue(Base):
+    __tablename__ = 'key_value'
+
+    id = Column(UUID, primary_key=True, index=True, default=uuid.uuid4)
+    key = Column(String(length=2048))
+    value = Column(JSON)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
