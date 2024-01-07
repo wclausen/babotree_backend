@@ -84,7 +84,7 @@ def get_existing_readwise_highlight_ids():
 
 
 def main():
-    last_updated_date = datetime.datetime.utcnow() - datetime.timedelta(days=2000)
+    last_updated_date = datetime.datetime.utcnow() - datetime.timedelta(days=1)
     highlight_data, book_data, next_cursor = get_highlight_data(last_updated_date=last_updated_date)
     readwise_source_id_to_my_source_id = get_existing_readwise_sources_map()
     existing_readwise_higlight_ids = get_existing_readwise_highlight_ids()

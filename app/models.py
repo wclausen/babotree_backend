@@ -68,6 +68,7 @@ class SourceType(enum.Enum):
     ALL_HIGHLIGHTS_FROM_SOURCE = 'FULL_HIGHLIGHTS_FROM_SOURCE'
     SOURCE_KEY_WORDS = 'SOURCE_KEY_WORDS'
     HIGHLIGHT_TEXT = 'HIGHLIGHT_TEXT'
+    FLASHCARD_TEXT = 'FLASHCARD_TEXT'
 
 
 class ContentEmbedding(Base):
@@ -92,6 +93,12 @@ class JobResults(Base):
     extra_data = Column(JSON)
     created_at = Column(DateTime)
 
+
+class FlashcardGenerationType(enum.Enum):
+    BASIC_FRONT_BACK_FLASHCARD = 'BASIC_FRONT_BACK_FLASHCARD'
+    TERM_DEFINITION_FLASHCARD = 'TERM_DEFINITION_FLASHCARD'
+    CLOZE_DELETION_FLASHCARD = 'CLOZE_DELETION_FLASHCARD'
+
 class Flashcard(Base):
     __tablename__ = 'flashcards'
 
@@ -99,7 +106,13 @@ class Flashcard(Base):
     topic = Column(String(length=2048))
     question = Column(String(length=2048))
     answer = Column(String(length=2048))
+    generation_type = Column(String(length=512), nullable=False)
+    highlight_source_id = Column(UUID, ForeignKey('highlight_sources.id'), index=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    def __repr__(self):
+        return f"Flashcard(id={self.id}, question={self.question}, answer={self.answer})"
+
 
 class FlashcardHighlightSource(Base):
     __tablename__ = 'flashcard_highlight_sources'

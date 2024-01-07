@@ -17,7 +17,8 @@ from starlette.middleware.cors import CORSMiddleware
 
 from app.babotree_utils import get_secret
 from app.database import get_db
-from app.models import Highlight, HighlightSource, HighlightSourceOutline, Flashcard
+from app.models import Highlight, HighlightSource, HighlightSourceOutline, Flashcard, ContentEmbedding, SourceType, \
+    FlashcardHighlightSource
 
 app = FastAPI()
 
@@ -42,6 +43,7 @@ def read_root():
 
 class ApiFlashcard(BaseModel):
     id: uuid.UUID
+    topic: str
     question: str
     answer: str
 
@@ -54,9 +56,47 @@ def get_main_flashcards(db: Session = Depends(get_db)):
     return {
         "flashcards": [ApiFlashcard(
         id=flashcard.id,
+        topic=flashcard.topic,
         question=flashcard.question,
         answer=flashcard.answer) for flashcard in flashcards]}
 
+
+class ApiRelatedHighlights(BaseModel):
+    related_highlights: List[str]
+
+
+@app.get("/flashcard/{flashcard_id}/related_highlights")
+def get_related_highlights(flashcard_id: uuid.UUID, db: Session = Depends(get_db)):
+    """
+    Returns the related highlights for the given flashcard
+    """
+    flashcard = db.query(Flashcard).filter(Flashcard.id == flashcard_id).first()
+    if not flashcard:
+        raise HTTPException(status_code=404, detail="Flashcard not found")
+    # check if we related highlights in the `flashcard_highlight_sources` table
+    related_highlights = (db.query(Highlight)
+    .join(FlashcardHighlightSource, FlashcardHighlightSource.highlight_id == Highlight.id)
+                             .filter(FlashcardHighlightSource.flashcard_id == flashcard_id).all())
+    if len(related_highlights) > 0:
+        return ApiRelatedHighlights(
+            related_highlights=[highlight.text for highlight in related_highlights]
+        )
+    # otherwise, we try the embeddings approach...
+    print("Trying to get related highlights via embeddings")
+    flashcard_embedding = db.query(ContentEmbedding).filter(ContentEmbedding.source_id == flashcard_id).first()
+    if not flashcard_embedding:
+        raise HTTPException(status_code=404, detail="No related highlights found")
+    # get the related highlights, based on proximity to embedding
+    closest_highlight_embeddings = (db.query(ContentEmbedding)
+                                    .filter(ContentEmbedding.source_type == SourceType.HIGHLIGHT_TEXT.value)
+                                    .order_by(
+        ContentEmbedding.embedding.cosine_distance(flashcard_embedding.embedding)).limit(3).all())
+    # get the actual highlights
+    closest_highlight_ids = [embedding.source_id for embedding in closest_highlight_embeddings]
+    related_highlights = db.query(Highlight).filter(Highlight.id.in_(closest_highlight_ids)).all()
+    return ApiRelatedHighlights(
+        related_highlights=[highlight.text for highlight in related_highlights]
+    )
 
 
 class ApiHighlight(BaseModel):
