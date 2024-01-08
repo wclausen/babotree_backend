@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from starlette.middleware.cors import CORSMiddleware
 
+from app import babotree_utils
 from app.babotree_utils import get_secret
 from app.database import get_db
 from app.models import Highlight, HighlightSource, HighlightSourceOutline, Flashcard, ContentEmbedding, SourceType, \
@@ -98,6 +99,105 @@ def get_related_highlights(flashcard_id: uuid.UUID, db: Session = Depends(get_db
         related_highlights=[highlight.text for highlight in related_highlights]
     )
 
+
+@app.get("/flashcard/{flashcard_id}/explain")
+def get_related_highlights(flashcard_id: uuid.UUID, db: Session = Depends(get_db)):
+    """
+    Returns the related highlights for the given flashcard
+    """
+    flashcard = db.query(Flashcard).filter(Flashcard.id == flashcard_id).first()
+    if not flashcard:
+        raise HTTPException(status_code=404, detail="Flashcard not found")
+    flashcard_source = db.query(HighlightSource).filter(HighlightSource.id == flashcard.highlight_source_id).first()
+    # check if we related highlights in the `flashcard_highlight_sources` table
+    related_highlights = (db.query(Highlight)
+    .join(FlashcardHighlightSource, FlashcardHighlightSource.highlight_id == Highlight.id)
+                             .filter(FlashcardHighlightSource.flashcard_id == flashcard_id).all())
+    if len(related_highlights) == 0:
+        print("Trying to get related highlights via embeddings")
+        flashcard_embedding = db.query(ContentEmbedding).filter(ContentEmbedding.source_id == flashcard_id).first()
+        if not flashcard_embedding:
+            raise HTTPException(status_code=404, detail="No related highlights found")
+        # get the related highlights, based on proximity to embedding
+        closest_highlight_embeddings = (db.query(ContentEmbedding)
+                                        .filter(ContentEmbedding.source_type == SourceType.HIGHLIGHT_TEXT.value)
+                                        .order_by(
+            ContentEmbedding.embedding.cosine_distance(flashcard_embedding.embedding)).limit(3).all())
+        # get the actual highlights
+        closest_highlight_ids = [embedding.source_id for embedding in closest_highlight_embeddings]
+        related_highlights = db.query(Highlight).filter(Highlight.id.in_(closest_highlight_ids)).all()
+    # now we use related highlights + flashcard to generate an explanation using LLMs
+
+    messages = [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant.",
+        },
+    ]
+    if len(related_highlights) > 0:
+        messages.append({
+            "role": "user",
+            "content": f"Here are some excerpts from a book/article I was reading that I used to create a question/answer pair. This will be useful context for my question:\n" + "\n".join(
+            [highlight.text for highlight in related_highlights]),
+        })
+        messages.append({
+            "role": "assistant",
+            "content": "Ok, I'm ready. What is your question?"
+        })
+        messages.append(
+            {
+                "role": "user",
+                "content": f"I'm studying questions/answers{' from a source called ' + flashcard_source.readable_title if flashcard_source else ''}. Here's the question and answer:\n" + "Question: " + flashcard.question + "\n" + "Answer: " + flashcard.answer +
+                "\n\n" + "I don't understand this question/answer pair. Please provide background information on this question to help me understand. Be concise.",
+        })
+    else:
+        print("No related highlights to send, just asking about the question/answer pair.")
+        messages.append(
+        {
+            "role": "user",
+            "content": f"I'm studying questions/answers{' from source called ' + flashcard_source.readable_title if flashcard_source else ''}. Here's the question/answer pair:\n" + "Question: " + flashcard.question + "\n" + "Answer: " + flashcard.answer + "\n\nThis question/answer pair is confusing to me. Can you explain it? Why does the answer make sense? Be concise."
+        })
+    print("Fetching explanation from together")
+    openai_client = openai.Client(
+        api_key=babotree_utils.get_secret('TOGETHER_API_KEY'),
+        base_url="https://api.together.xyz/v1",
+    )
+    # model = 'gpt-4-1106-preview'
+    model = 'mistralai/Mixtral-8x7B-Instruct-v0.1'
+    response = openai_client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=1.0,
+        max_tokens=500,
+        top_p=1.0,
+        frequency_penalty=0.35,
+        presence_penalty=0.5,
+    )
+    print(response.choices[0].message.content)
+    # words_in_response = len(response.choices[0].message.content.split(" "))
+    # if words_in_response > 25:
+    #     # make it more concise
+    #     print("Response is too long. Making it more concise")
+    #     messages.append({
+    #         "role": "assistant",
+    #         "content": response.choices[0].message.content
+    #     })
+    #     messages.append({
+    #         "role": "user",
+    #         "content": "That's great. Could you make it more concise?"
+    #     })
+    #     response = openai_client.chat.completions.create(
+    #         model=model,
+    #         messages=messages,
+    #         temperature=.5,
+    #         max_tokens=500,
+    #         top_p=1.0,
+    #         frequency_penalty=0.5,
+    #         presence_penalty=0.6,
+    #     )
+    return {
+        "explanation": response.choices[0].message.content
+    }
 
 class ApiHighlight(BaseModel):
     id: uuid.UUID
