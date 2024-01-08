@@ -53,7 +53,7 @@ def get_main_flashcards(db: Session = Depends(get_db)):
     """
     Returns the flashcards for the main page
     """
-    flashcards = db.query(Flashcard).order_by(Flashcard.created_at.desc()).all()
+    flashcards = db.query(Flashcard).order_by(Flashcard.created_at.desc()).limit(100).all()
     return {
         "flashcards": [ApiFlashcard(
         id=flashcard.id,

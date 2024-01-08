@@ -538,8 +538,8 @@ def add_source_id_to_flashcards(source_id):
 def main():
     # the flashcard generation process is fairly involved and involves a pipeline of several steps
     highlight_source_id = '0a16c1a1-33b3-4777-8d2a-59347d1a985a'
-    # generate_basic_front_back_flashcards_for_source(highlight_source_id)
-    # generate_term_definition_flashcards_for_source(highlight_source_id)
+    generate_basic_front_back_flashcards_for_source(highlight_source_id)
+    generate_term_definition_flashcards_for_source(highlight_source_id)
 
 if __name__ == '__main__':
     main()
