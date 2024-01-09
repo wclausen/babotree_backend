@@ -70,14 +70,15 @@ def extract_json(content):
         return json_str.strip()
 
 
-def insert_flashcard(flashcards_json_dict, source_title, flashcard_generation_type):
+def insert_flashcard(flashcards_json_dict, highlight_source, flashcard_generation_type):
     db = get_direct_db()
     for flashcard in flashcards_json_dict['flashcards']:
         db_model = Flashcard(
             id=flashcard['id'] if 'id' in flashcard else uuid.uuid4(),
-            topic=source_title,
+            topic=highlight_source.readable_title,
             question=flashcard['question'],
             answer=flashcard['answer'],
+            highlight_source_id=highlight_source.id,
             generation_type=flashcard_generation_type,
         )
         db.add(db_model)
@@ -201,7 +202,7 @@ def generate_basic_front_back_flashcards_for_source(highlight_source_id):
             # add uuid to each flashcard, used to connect the flashcard to the highlights that created it
             for flashcard in flashcards_json_dict['flashcards']:
                 flashcard['id'] = uuid.uuid4()
-            insert_flashcard(flashcards_json_dict, highlight_source.readable_title,
+            insert_flashcard(flashcards_json_dict, highlight_source,
                              FlashcardGenerationType.BASIC_FRONT_BACK_FLASHCARD.value)
             insert_flashcard_highlight_connections(flashcards_json_dict, [highlight] + adjacent_highlights)
         except Exception as e:
@@ -240,7 +241,7 @@ def get_source_topics(highlight_source, highlights):
     response = openai_client.chat.completions.create(
         model=model,
         messages=messages,
-        temperature=1.0,
+        temperature=0.7,
         max_tokens=1000,
         top_p=1.0,
         frequency_penalty=.25,
@@ -253,7 +254,32 @@ def get_source_topics(highlight_source, highlights):
         return topic_json_dict
     except Exception as e:
         print("error extracting json from response", e)
-        return None
+        # try once more
+        messages.append({
+            "role": "assistant",
+            "content": response.choices[0].message.content
+        })
+        messages.append({
+            "role": "user",
+            "content": "Uh oh, looks like that wasn't quite valid json. Can you retry this, watch out for markdown syntax issues."
+        })
+        response = openai_client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=.25,
+            max_tokens=1000,
+            top_p=1.0,
+            frequency_penalty=.45,
+            presence_penalty=.45,
+        )
+        try:
+            topic_json_str = extract_json(response.choices[0].message.content)
+            topic_json_dict = json.loads(topic_json_str)
+            print(topic_json_dict)
+            return topic_json_dict
+        except Exception as e:
+            print("Failed a second time to get json for topics")
+            return None
 
 
 @retry(wait=wait_random_exponential(min=1, max=20), stop=stop_after_attempt(6))
@@ -309,10 +335,10 @@ def get_relevant_term_definition_flashcards(flashcards_json_dict, highlight_sour
 def get_term_definition_flashcards_from_highlights(highlight_source, highlights):
     TYPESCRIPT_KEY_TERM_INTERFACE = """
     enum TermType {
-        GENERAL = 'GENERAL',
-        API_COMMAND = 'API_COMMAND',
-        API_CLASS = 'API_CLASS',
-        API_METHOD = 'API_METHOD',
+        General = 'General',
+        ApiCommand = 'ApiCommand',
+        ApiClass = 'ApiClass',
+        ApiMethod = 'ApiMethod',
     }
     interface KeyTerm {
         term: string;
@@ -392,7 +418,7 @@ def get_term_definition_flashcards_from_highlights(highlight_source, highlights)
     try:
         term_definition_json_str = extract_json(response.choices[0].message.content)
         term_definition_dict = json.loads(term_definition_json_str)
-        CODE_TERM_TYPES = ['API_COMMAND', 'API_CLASS', 'API_METHOD']
+        CODE_TERM_TYPES = ['ApiCommand', 'ApiClass', 'ApiMethod']
         next_flashcards_json_dict = {
             "flashcards": [
                 {
@@ -430,10 +456,11 @@ def get_term_definition_flashcards_from_highlights(highlight_source, highlights)
         try:
             term_definition_json_str = extract_json(response.choices[0].message.content)
             term_definition_dict = json.loads(term_definition_json_str)
-            CODE_TERM_TYPES = ['API_COMMAND', 'API_CLASS', 'API_METHOD']
+            CODE_TERM_TYPES = ['ApiCommand', 'ApiClass', 'ApiMethod']
             next_flashcards_json_dict = {
                 "flashcards": [
                     {
+                        "id": uuid.uuid4(),
                         "question": '`' + term_definition['term'] + '`' if term_definition[
                                                                                'termType'] in CODE_TERM_TYPES else
                         term_definition['term'],
@@ -459,7 +486,7 @@ def make_flashcard_highlight_connections(good_flashcards_json_dict, highlights):
         flashcard_embedding = sklearn.preprocessing.normalize(flashcard_embedding)
         # identify three highlights with closest dot product to flashcard embedding
         closest_highlights_and_embedding = sorted(list(zip(highlights, highlight_embeddings)),
-                                                  key=lambda x: np.dot(x[1], flashcard_embedding), reverse=True)[:3]
+                                                  key=lambda x: np.dot(x[1], flashcard_embedding.T), reverse=True)[:3]
         for highlight, _ in closest_highlights_and_embedding:
             connection_model = FlashcardHighlightSource(
                 flashcard_id=flashcard['id'],
@@ -487,15 +514,24 @@ def generate_term_definition_flashcards_for_source(highlight_source_id):
         next_flashcards_json_dict = get_term_definition_flashcards_from_highlights(highlight_source, next_highlights)
         # filter out terms that are already present in the flashcards_json_dict
         next_flashcards_json_dict['flashcards'] = [flashcard for flashcard in next_flashcards_json_dict['flashcards'] if
-                                                   flashcard['question'] not in [x['question'] for x in
+                                                   flashcard['question'].strip('`') not in [x['question'].strip('`') for x in
                                                                                  flashcards_json_dict['flashcards']]]
         flashcards_json_dict['flashcards'] += next_flashcards_json_dict['flashcards']
         print("------")
         print("------")
+    # now we need to filter out the flashcards that are already present in the database
+    db = get_direct_db()
+    existing_term_definition_cards_for_source = db.query(Flashcard).filter(
+        Flashcard.highlight_source_id == highlight_source_id,
+        Flashcard.generation_type == FlashcardGenerationType.TERM_DEFINITION_FLASHCARD.value).all()
+    db.close()
+    existing_terms = set([x.question.strip('`') for x in existing_term_definition_cards_for_source])
+    flashcards_json_dict['flashcards'] = [flashcard for flashcard in flashcards_json_dict['flashcards'] if
+                                            flashcard['question'].strip('`') not in existing_terms]
     # now we need to filter out any flashcards that are sufficiently far away from the overall topics of the highlights
     good_flashcards_json_dict = get_relevant_term_definition_flashcards(flashcards_json_dict, highlight_source,
                                                                         highlights)
-    insert_flashcard(good_flashcards_json_dict, highlight_source.readable_title,
+    insert_flashcard(good_flashcards_json_dict, highlight_source,
                      FlashcardGenerationType.TERM_DEFINITION_FLASHCARD.value)
     make_flashcard_highlight_connections(good_flashcards_json_dict, highlights)
 
@@ -538,7 +574,7 @@ def add_source_id_to_flashcards(source_id):
 def main():
     # the flashcard generation process is fairly involved and involves a pipeline of several steps
     highlight_source_id = '0a16c1a1-33b3-4777-8d2a-59347d1a985a'
-    generate_basic_front_back_flashcards_for_source(highlight_source_id)
+    # generate_basic_front_back_flashcards_for_source(highlight_source_id)
     generate_term_definition_flashcards_for_source(highlight_source_id)
 
 if __name__ == '__main__':
